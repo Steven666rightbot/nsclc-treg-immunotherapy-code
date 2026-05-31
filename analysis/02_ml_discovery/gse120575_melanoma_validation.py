@@ -1,31 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-GSE120575 Melanoma Cross-Cancer Validation (n=48 post-treatment biopsies)
+GSE120575 Melanoma Cross-Cancer Validation
 Sade-Feldman et al., Cell 2018
 
 Validates CCR8+ and MKI67+ Treg proportions as predictors of immunotherapy
 response across a non-NSCLC malignancy.
 
-Expected data format:
-    - GSE120575_counts.csv (or .mtx) : gene x cell expression matrix
-    - GSE120575_metadata.csv          : cell-level metadata with columns:
-                                        'cell', 'patient', 'response'
-                                        ('R' = responder, 'NR' = non-responder)
+Dataset facts (verified from original publication & GEO):
+    - 48 tumor samples (19 pre-treatment, 29 post-treatment)
+    - From 32 melanoma patients (11 with longitudinal pre/post biopsies)
+    - 16,291 CD45+ immune cells (Smart-seq2, TPM)
+    - Response defined per lesion (Responder = CR/PR, Non-responder = SD/PD)
 
-If data are not present, the script prints manual download instructions.
+Analysis is performed at the lesion (sample) level to match the original
+publication's lesion-level response classification.
 """
 
 import os
 import sys
 import gzip
 import warnings
-import subprocess
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import scipy.io
 from scipy import stats
 import matplotlib
 matplotlib.use('Agg')
@@ -45,272 +44,198 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(RESULT_DIR, exist_ok=True)
 os.makedirs(FIG_DIR, exist_ok=True)
 
-# Expected files
-META_FILE = os.path.join(DATA_DIR, 'GSE120575_metadata.csv')
-COUNTS_FILE = os.path.join(DATA_DIR, 'GSE120575_counts.csv.gz')
-MTX_FILE = os.path.join(DATA_DIR, 'matrix.mtx')
-BARCODES_FILE = os.path.join(DATA_DIR, 'barcodes.tsv')
-GENES_FILE = os.path.join(DATA_DIR, 'genes.tsv')
+# Source files (downloaded from GEO)
+TPM_FILE = os.path.join(DATA_DIR, 'GSE120575_Sade_Feldman_melanoma_single_cells_TPM_GEO.txt.gz')
+META_FILE = os.path.join(DATA_DIR, 'GSE120575_patient_ID_single_cells.txt.gz')
 
 # Marker genes
 TREG_MARKERS = ['FOXP3', 'IL2RA', 'CTLA4']
 CCR8_MARKER = 'CCR8'
 MKI67_MARKER = 'MKI67'
 
-# Response mapping
-RESPONSE_MAP = {
-    'R': 'Responder',
-    'NR': 'Non-responder',
-    'Responder': 'Responder',
-    'Non-responder': 'Non-responder',
-    ' responder': 'Responder',
-    ' non-responder': 'Non-responder',
-}
-
 # ---------------------------------------------------------------------------
-# 0. CHECK / DOWNLOAD DATA
+# 1. PARSE GEO METADATA
 # ---------------------------------------------------------------------------
-def check_data():
-    """Check if required data files exist; if not, print download instructions."""
-    has_meta = os.path.exists(META_FILE)
-    has_counts = os.path.exists(COUNTS_FILE) or os.path.exists(MTX_FILE)
-    
-    if has_meta and has_counts:
-        return True
-    
-    print("=" * 70)
-    print("GSE120575 data not found. Manual download required.")
-    print("=" * 70)
-    print("""
-The GSE120575 dataset (Sade-Feldman et al., Cell 2018) is not included in
-this repository due to size (~1.5 GB). Please download the files and place
-them in: {data_dir}
-
-Recommended download approach:
-1. GEOquery (R):
-   library(GEOquery)
-   gse <- getGEO("GSE120575", GSEMatrix = TRUE)
-   # Or use the Series Matrix file from GEO
-
-2. Direct GEO download:
-   https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE120575
-   - Download "Series Matrix File(s)" for metadata
-   - Download supplementary count matrix (may be .csv, .mtx, or .h5)
-
-3. From the original publication (Sade-Feldman et al., Cell 2018):
-   The single-cell count matrix and metadata are available as supplementary
-   materials or via the Broad Institute Single Cell Portal.
-
-Required files (choose one count format):
-  A. Dense CSV:
-     {meta}
-     {counts}
-  
-  B. Sparse MTX (10x-like):
-     {meta}
-     {mtx}
-     {barcodes}
-     {genes}
-
-Metadata CSV must contain at least these columns:
-  - 'cell'     : cell barcode / identifier
-  - 'patient'  : patient/biopsy identifier (48 unique patients)
-  - 'response' : 'R' or 'NR' (or 'Responder' / 'Non-responder')
-""".format(
-        data_dir=DATA_DIR,
-        meta=META_FILE,
-        counts=COUNTS_FILE,
-        mtx=MTX_FILE,
-        barcodes=BARCODES_FILE,
-        genes=GENES_FILE,
-    ))
-    return False
-
-
-# ---------------------------------------------------------------------------
-# 1. LOAD METADATA
-# ---------------------------------------------------------------------------
-def load_metadata():
-    """Load and standardize metadata."""
+def parse_metadata():
+    """Parse the GEO metadata file to get cell-level annotation."""
     print("\n" + "=" * 70)
-    print("Loading metadata...")
+    print("Parsing GEO metadata...")
     print("=" * 70)
     
-    meta = pd.read_csv(META_FILE)
-    print(f"  Metadata shape: {meta.shape}")
-    print(f"  Columns: {list(meta.columns)}")
+    with gzip.open(META_FILE, 'rb') as f:
+        lines = f.read().decode('latin-1').split('\r\n')
     
-    # Standardize column names (case-insensitive matching)
-    col_map = {}
-    for c in meta.columns:
-        c_lower = c.lower().strip()
-        if c_lower in ['cell', 'barcode', 'cell_id']:
-            col_map[c] = 'cell'
-        elif c_lower in ['patient', 'sample', 'patient_id', 'biopsy']:
-            col_map[c] = 'patient'
-        elif c_lower in ['response', 'response_status', 'responder', 'best_response']:
-            col_map[c] = 'response'
+    header_idx = next(i for i, l in enumerate(lines) if l.startswith('Sample name'))
+    header = lines[header_idx].split('\t')
     
-    if 'cell' not in col_map.values() or 'patient' not in col_map.values() or 'response' not in col_map.values():
-        print("  WARNING: Could not auto-map required columns. Please ensure metadata has:")
-        print("    - 'cell'     : cell identifier")
-        print("    - 'patient'  : patient/biopsy ID")
-        print("    - 'response' : 'R'/'NR' or 'Responder'/'Non-responder'")
-        print("  Available columns:", list(meta.columns))
-        sys.exit(1)
+    rows = []
+    for line in lines[header_idx + 1:]:
+        if not line.strip():
+            continue
+        parts = line.split('\t')
+        if len(parts) >= 6 and parts[0].startswith('Sample'):
+            rows.append(parts[:7])
     
-    meta = meta.rename(columns={k: v for k, v in col_map.items()})
+    meta = pd.DataFrame(rows, columns=header[:7])
     
-    # Standardize response labels
-    meta['response_group'] = meta['response'].astype(str).str.strip().map(
-        lambda x: RESPONSE_MAP.get(x, x)
+    # Keep only valid response entries
+    meta = meta[meta['characteristics: response'].isin(['Responder', 'Non-responder'])]
+    
+    # Parse fields
+    meta['cell_id'] = meta['title'].str.strip()
+    meta['patient_raw'] = meta['characteristics: patinet ID (Pre=baseline; Post= on treatment)']
+    meta['pre_post'] = meta['patient_raw'].apply(
+        lambda x: 'Pre' if str(x).startswith('Pre') else ('Post' if str(x).startswith('Post') else 'Unknown')
     )
+    meta['patient_base'] = meta['patient_raw'].str.replace(r'^(Pre|Post)_', '', regex=True)
+    meta['response'] = meta['characteristics: response']
+    meta['therapy'] = meta['characteristics: therapy']
+    meta['is_enriched'] = meta['cell_id'].str.contains('_enriched', na=False)
     
-    n_patients = meta['patient'].nunique()
-    n_cells = len(meta)
-    print(f"  Patients: {n_patients}")
-    print(f"  Cells: {n_cells}")
-    print(f"  Response groups:\n{meta['response_group'].value_counts()}")
+    print(f"  Total cells: {len(meta)}")
+    print(f"  Pre-treatment: {(meta['pre_post'] == 'Pre').sum()}")
+    print(f"  Post-treatment: {(meta['pre_post'] == 'Post').sum()}")
+    print(f"  Enriched cells: {meta['is_enriched'].sum()}")
+    
+    # Sample-level summary
+    sample_summary = meta.groupby(['patient_raw', 'pre_post']).agg({
+        'cell_id': 'count',
+        'response': 'first',
+        'patient_base': 'first',
+    }).rename(columns={'cell_id': 'n_cells'}).reset_index()
+    
+    print(f"\n  Unique samples (lesions): {len(sample_summary)}")
+    print(f"    Pre: {(sample_summary['pre_post'] == 'Pre').sum()}")
+    print(f"    Post: {(sample_summary['pre_post'] == 'Post').sum()}")
+    print(f"    Responders: {(sample_summary['response'] == 'Responder').sum()}")
+    print(f"    Non-responders: {(sample_summary['response'] == 'Non-responder').sum()}")
+    
+    # Patients with both pre and post
+    patient_prepost = sample_summary.pivot_table(
+        index='patient_base', columns='pre_post', values='n_cells', aggfunc='sum'
+    )
+    n_both = patient_prepost.dropna().shape[0]
+    print(f"  Patients with both Pre & Post: {n_both}")
     
     return meta
 
 
 # ---------------------------------------------------------------------------
-# 2. LOAD EXPRESSION MATRIX
+# 2. STREAM TPM MATRIX (only needed genes)
 # ---------------------------------------------------------------------------
-def load_expression():
-    """Load count matrix in either dense CSV or sparse MTX format."""
+def load_expression(meta):
+    """Stream the TPM matrix and extract only marker genes."""
     print("\n" + "=" * 70)
-    print("Loading expression matrix...")
+    print("Loading expression (streaming marker genes)...")
     print("=" * 70)
     
-    if os.path.exists(COUNTS_FILE):
-        print(f"  Reading dense CSV: {COUNTS_FILE}")
-        counts = pd.read_csv(COUNTS_FILE, index_col=0)
-        print(f"  Shape: {counts.shape}")
-        return counts
+    needed_genes = TREG_MARKERS + [CCR8_MARKER, MKI67_MARKER]
+    gene_expr = {}
     
-    elif os.path.exists(MTX_FILE):
-        print(f"  Reading sparse MTX: {MTX_FILE}")
-        mtx = scipy.io.mmread(MTX_FILE)
+    with gzip.open(TPM_FILE, 'rt', encoding='latin-1') as f:
+        cell_ids = f.readline().strip().split('\t')
+        patient_row = f.readline().strip().split('\t')
         
-        with open(BARCODES_FILE, 'r') as f:
-            barcodes = [line.strip() for line in f]
-        with open(GENES_FILE, 'r') as f:
-            genes = [line.strip().split('\t')[0] for line in f]
-        
-        counts = pd.DataFrame(mtx.toarray(), index=genes, columns=barcodes)
-        print(f"  Shape: {counts.shape}")
-        return counts
+        for line in f:
+            parts = line.strip().split('\t')
+            gene = parts[0]
+            if gene.upper() in [g.upper() for g in needed_genes]:
+                gene_expr[gene.upper()] = np.array(parts[1:], dtype=np.float32)
+                print(f"  Found {gene}")
+                if len(gene_expr) == len(needed_genes):
+                    break
     
-    else:
-        print("  ERROR: No expression matrix found.")
-        sys.exit(1)
+    # Build cell-level DataFrame
+    cell_df = pd.DataFrame({
+        'cell_id': cell_ids,
+        'patient_tpm': patient_row,
+    })
+    
+    # Merge with metadata
+    meta_cols = ['cell_id', 'patient_raw', 'pre_post', 'patient_base',
+                 'response', 'therapy', 'is_enriched']
+    cell_df = cell_df.merge(meta[meta_cols], on='cell_id', how='inner')
+    
+    # Add expression
+    for gene in needed_genes:
+        cell_df[gene] = gene_expr[gene.upper()]
+    
+    print(f"\n  Cells with metadata + expression: {len(cell_df)}")
+    return cell_df
 
 
 # ---------------------------------------------------------------------------
-# 3. IDENTIFY TREG CELLS
+# 3. IDENTIFY TREG AND SUBTYPE CELLS
 # ---------------------------------------------------------------------------
-def identify_tregs(counts, meta):
-    """Identify Treg cells using canonical markers."""
+def classify_cells(cell_df):
+    """Classify Treg and CCR8+/MKI67+ subsets."""
     print("\n" + "=" * 70)
-    print("Identifying Treg cells...")
+    print("Classifying Treg cells...")
     print("=" * 70)
     
-    genes = counts.index.tolist()
-    genes_upper = [g.upper() for g in genes]
-    gene_map = {g.upper(): g for g in genes}
+    # Treg: express at least 2 of 3 canonical markers (TPM > 0)
+    treg_score = (cell_df['FOXP3'] > 0).astype(int) + \
+                 (cell_df['IL2RA'] > 0).astype(int) + \
+                 (cell_df['CTLA4'] > 0).astype(int)
+    cell_df['is_treg'] = treg_score >= 2
     
-    # Find available Treg markers
-    treg_avail = [gene_map[g] for g in TREG_MARKERS if g in gene_map]
-    print(f"  Treg markers available: {treg_avail}")
+    # Subtypes
+    cell_df['is_ccr8_treg'] = cell_df['is_treg'] & (cell_df['CCR8'] > 0)
+    cell_df['is_mki67_treg'] = cell_df['is_treg'] & (cell_df['MKI67'] > 0)
     
-    if len(treg_avail) < 2:
-        print("  WARNING: Fewer than 2 Treg markers found. Trying alternative names...")
-        alt_map = {'IL2RA': 'CD25', 'CTLA4': 'CD152'}
-        for alt, orig in alt_map.items():
-            if alt in gene_map and orig not in treg_avail:
-                treg_avail.append(gene_map[alt])
-        print(f"  After alternative mapping: {treg_avail}")
+    n_treg = cell_df['is_treg'].sum()
+    n_ccr8 = cell_df['is_ccr8_treg'].sum()
+    n_mki67 = cell_df['is_mki67_treg'].sum()
     
-    # Subset to cells in metadata
-    common_cells = list(set(counts.columns) & set(meta['cell']))
-    counts_sub = counts[common_cells]
-    meta_sub = meta[meta['cell'].isin(common_cells)].copy()
-    meta_sub = meta_sub.set_index('cell')
+    print(f"  Total cells: {len(cell_df)}")
+    print(f"  Treg cells: {n_treg} ({100*n_treg/len(cell_df):.2f}%)")
+    print(f"  CCR8+ Treg: {n_ccr8} ({100*n_ccr8/len(cell_df):.2f}% of immune)")
+    print(f"  MKI67+ Treg: {n_mki67} ({100*n_mki67/len(cell_df):.2f}% of immune)")
     
-    # Detect Treg: express at least 2 of 3 canonical markers
-    treg_expr = (counts_sub.loc[treg_avail] > 0).sum(axis=0)
-    is_treg = treg_expr >= 2
-    
-    treg_cells = is_treg[is_treg].index.tolist()
-    print(f"  Total cells: {len(common_cells)}")
-    print(f"  Treg cells (>=2 markers): {len(treg_cells)} ({100*len(treg_cells)/len(common_cells):.2f}%)")
-    
-    meta_sub['is_treg'] = is_treg
-    
-    return counts_sub, meta_sub, treg_cells, gene_map
+    return cell_df
 
 
 # ---------------------------------------------------------------------------
-# 4. COMPUTE CCR8+ AND MKI67+ TREG PROPORTIONS
+# 4. COMPUTE PER-SAMPLE PROPORTIONS
 # ---------------------------------------------------------------------------
-def compute_proportions(counts_sub, meta_sub, treg_cells, gene_map):
-    """Compute per-patient CCR8+ and MKI67+ Treg proportions."""
+def compute_proportions(cell_df):
+    """Compute per-sample (lesion-level) proportions."""
     print("\n" + "=" * 70)
-    print("Computing CCR8+ and MKI67+ Treg proportions...")
+    print("Computing per-sample proportions...")
     print("=" * 70)
     
-    treg_counts = counts_sub[treg_cells]
-    
-    # CCR8+
-    ccr8_gene = gene_map.get('CCR8')
-    if ccr8_gene:
-        ccr8_expr = treg_counts.loc[ccr8_gene]
-        is_ccr8 = (ccr8_expr > 0).reindex(meta_sub.index, fill_value=False)
-    else:
-        print("  WARNING: CCR8 not found in gene list")
-        is_ccr8 = pd.Series(False, index=meta_sub.index)
-    
-    # MKI67+
-    mki67_gene = gene_map.get('MKI67')
-    if mki67_gene:
-        mki67_expr = treg_counts.loc[mki67_gene]
-        is_mki67 = (mki67_expr > 0).reindex(meta_sub.index, fill_value=False)
-    else:
-        print("  WARNING: MKI67 not found in gene list")
-        is_mki67 = pd.Series(False, index=meta_sub.index)
-    
-    meta_sub['is_ccr8_treg'] = is_ccr8 & meta_sub['is_treg']
-    meta_sub['is_mki67_treg'] = is_mki67 & meta_sub['is_treg']
-    
-    # Per-patient aggregation
-    patient_summary = []
-    for patient, grp in meta_sub.groupby('patient'):
+    summary = []
+    for sample_id, grp in cell_df.groupby('patient_raw'):
         total = len(grp)
+        if total < 5:
+            continue
+        
         treg = grp['is_treg'].sum()
         ccr8 = grp['is_ccr8_treg'].sum()
         mki67 = grp['is_mki67_treg'].sum()
         
-        response = grp['response_group'].iloc[0] if 'response_group' in grp.columns else 'Unknown'
+        response = grp['response'].iloc[0]
+        pre_post = grp['pre_post'].iloc[0]
+        patient_base = grp['patient_base'].iloc[0]
         
-        patient_summary.append({
-            'patient': patient,
+        summary.append({
+            'sample_id': sample_id,
+            'patient': patient_base,
+            'pre_post': pre_post,
             'response': response,
             'total_cells': total,
             'treg_cells': treg,
-            'ccr8_treg': ccr8,
-            'mki67_treg': mki67,
-            'treg_pct': 100 * treg / total if total > 0 else 0,
-            'ccr8_pct_of_immune': 100 * ccr8 / total if total > 0 else 0,
-            'mki67_pct_of_immune': 100 * mki67 / total if total > 0 else 0,
+            'ccr8_treg_cells': ccr8,
+            'mki67_treg_cells': mki67,
+            'ccr8_pct_of_immune': 100 * ccr8 / total,
+            'mki67_pct_of_immune': 100 * mki67 / total,
             'ccr8_pct_of_treg': 100 * ccr8 / treg if treg > 0 else 0,
             'mki67_pct_of_treg': 100 * mki67 / treg if treg > 0 else 0,
         })
     
-    summary_df = pd.DataFrame(patient_summary)
-    print(f"  Patients summarized: {len(summary_df)}")
-    print(summary_df.head().to_string(index=False))
+    summary_df = pd.DataFrame(summary)
+    print(f"  Samples summarized: {len(summary_df)}")
+    print(summary_df[['sample_id', 'response', 'ccr8_pct_of_immune', 'mki67_pct_of_immune']].head().to_string(index=False))
     
     return summary_df
 
@@ -319,9 +244,9 @@ def compute_proportions(counts_sub, meta_sub, treg_cells, gene_map):
 # 5. STATISTICAL TESTS
 # ---------------------------------------------------------------------------
 def statistical_tests(summary_df):
-    """Perform Mann-Whitney U tests for CCR8+ and MKI67+ Treg proportions."""
+    """Perform Mann-Whitney U tests."""
     print("\n" + "=" * 70)
-    print("Statistical tests (Mann-Whitney U)...")
+    print("Statistical tests (Mann-Whitney U, two-sided)...")
     print("=" * 70)
     
     r = summary_df[summary_df['response'] == 'Responder']
@@ -338,25 +263,24 @@ def statistical_tests(summary_df):
         r_vals = r[metric].dropna().values
         nr_vals = nr[metric].dropna().values
         
-        if len(r_vals) > 0 and len(nr_vals) > 0:
-            stat, pval = stats.mannwhitneyu(r_vals, nr_vals, alternative='two-sided')
-            results[metric] = {
-                'label': label,
-                'responder_mean': np.mean(r_vals),
-                'responder_median': np.median(r_vals),
-                'responder_n': len(r_vals),
-                'nonresponder_mean': np.mean(nr_vals),
-                'nonresponder_median': np.median(nr_vals),
-                'nonresponder_n': len(nr_vals),
-                'mann_whitney_U': stat,
-                'p_value': pval,
-            }
-            print(f"\n  {label}:")
-            print(f"    Responder:     mean={np.mean(r_vals):.3f}, median={np.median(r_vals):.3f}, n={len(r_vals)}")
-            print(f"    Non-responder: mean={np.mean(nr_vals):.3f}, median={np.median(nr_vals):.3f}, n={len(nr_vals)}")
-            print(f"    Mann-Whitney U = {stat:.2f}, p = {pval:.4f}")
-        else:
-            print(f"\n  {label}: INSUFFICIENT DATA")
+        stat, pval = stats.mannwhitneyu(r_vals, nr_vals, alternative='two-sided')
+        
+        results[metric] = {
+            'label': label,
+            'responder_mean': np.mean(r_vals),
+            'responder_median': np.median(r_vals),
+            'responder_n': len(r_vals),
+            'nonresponder_mean': np.mean(nr_vals),
+            'nonresponder_median': np.median(nr_vals),
+            'nonresponder_n': len(nr_vals),
+            'mann_whitney_U': stat,
+            'p_value': pval,
+        }
+        
+        print(f"\n  {label}:")
+        print(f"    Responder:     mean={np.mean(r_vals):.3f}%, median={np.median(r_vals):.3f}%, n={len(r_vals)}")
+        print(f"    Non-responder: mean={np.mean(nr_vals):.3f}%, median={np.median(nr_vals):.3f}%, n={len(nr_vals)}")
+        print(f"    Mann-Whitney U = {stat:.2f}, p = {pval:.4f}")
     
     results_df = pd.DataFrame(results).T
     results_df.to_csv(os.path.join(RESULT_DIR, 'gse120575_statistical_tests.csv'), index=True)
@@ -369,7 +293,7 @@ def statistical_tests(summary_df):
 # 6. PLOT SUPPLEMENTARY FIGURE 2
 # ---------------------------------------------------------------------------
 def plot_supplementary_figure_2(summary_df):
-    """Generate Supplementary Figure 2: cross-cancer melanoma validation."""
+    """Generate Supplementary Figure 2."""
     print("\n" + "=" * 70)
     print("Generating Supplementary Figure 2...")
     print("=" * 70)
@@ -392,7 +316,6 @@ def plot_supplementary_figure_2(summary_df):
     })
     
     fig, axes = plt.subplots(1, 2, figsize=(8, 4.5))
-    
     colors = {'Responder': '#3498db', 'Non-responder': '#e74c3c'}
     
     # Panel A: CCR8+ Treg
@@ -412,14 +335,19 @@ def plot_supplementary_figure_2(summary_df):
         patch.set_facecolor(color)
         patch.set_alpha(0.7)
     
-    r_vals = summary_df[summary_df['response'] == 'Responder']['ccr8_pct_of_immune'].dropna().values
-    nr_vals = summary_df[summary_df['response'] == 'Non-responder']['ccr8_pct_of_immune'].dropna().values
-    if len(r_vals) > 0 and len(nr_vals) > 0:
-        _, pval = stats.mannwhitneyu(r_vals, nr_vals, alternative='two-sided')
-        sig = f'p = {pval:.3f}' if pval >= 0.001 else f'p = {pval:.2e}'
-        y_max = max(np.max(r_vals) if len(r_vals) > 0 else 0,
-                    np.max(nr_vals) if len(nr_vals) > 0 else 0)
-        ax.text(1.5, y_max * 0.95, sig, ha='center', va='bottom', fontsize=10, fontweight='bold')
+    # Add jittered points
+    for i, resp in enumerate(['Responder', 'Non-responder']):
+        vals = summary_df[summary_df['response'] == resp]['ccr8_pct_of_immune'].dropna().values
+        jitter = np.random.normal(i + 1, 0.04, size=len(vals))
+        ax.scatter(jitter, vals, color='black', s=15, alpha=0.5, zorder=3)
+    
+    _, pval = stats.mannwhitneyu(plot_data[0], plot_data[1], alternative='two-sided')
+    sig = f'p = {pval:.3f}' if pval >= 0.001 else f'p = {pval:.2e}'
+    y_max = max(np.max(plot_data[0]) if len(plot_data[0]) > 0 else 0,
+                np.max(plot_data[1]) if len(plot_data[1]) > 0 else 0)
+    ax.text(1.5, y_max * 0.95, sig, ha='center', va='bottom', fontsize=10, fontweight='bold')
+    if pval < 0.05:
+        ax.text(1.5, y_max * 1.05, '*', ha='center', va='bottom', fontsize=14, fontweight='bold', color='red')
     
     ax.set_ylabel('CCR8+ Treg (% of immune cells)', fontsize=11)
     ax.set_title('(A) CCR8+ Treg', fontweight='bold')
@@ -442,24 +370,25 @@ def plot_supplementary_figure_2(summary_df):
         patch.set_facecolor(color)
         patch.set_alpha(0.7)
     
-    r_vals = summary_df[summary_df['response'] == 'Responder']['mki67_pct_of_immune'].dropna().values
-    nr_vals = summary_df[summary_df['response'] == 'Non-responder']['mki67_pct_of_immune'].dropna().values
-    if len(r_vals) > 0 and len(nr_vals) > 0:
-        _, pval = stats.mannwhitneyu(r_vals, nr_vals, alternative='two-sided')
-        sig = f'p = {pval:.3f}' if pval >= 0.001 else f'p = {pval:.2e}'
-        y_max = max(np.max(r_vals) if len(r_vals) > 0 else 0,
-                    np.max(nr_vals) if len(nr_vals) > 0 else 0)
-        ax.text(1.5, y_max * 0.95, sig, ha='center', va='bottom', fontsize=10, fontweight='bold')
-        # Add significance asterisk if p < 0.05
-        if pval < 0.05:
-            ax.text(1.5, y_max * 1.05, '*', ha='center', va='bottom', fontsize=14, fontweight='bold', color='red')
+    for i, resp in enumerate(['Responder', 'Non-responder']):
+        vals = summary_df[summary_df['response'] == resp]['mki67_pct_of_immune'].dropna().values
+        jitter = np.random.normal(i + 1, 0.04, size=len(vals))
+        ax.scatter(jitter, vals, color='black', s=15, alpha=0.5, zorder=3)
+    
+    _, pval = stats.mannwhitneyu(plot_data[0], plot_data[1], alternative='two-sided')
+    sig = f'p = {pval:.3f}' if pval >= 0.001 else f'p = {pval:.2e}'
+    y_max = max(np.max(plot_data[0]) if len(plot_data[0]) > 0 else 0,
+                np.max(plot_data[1]) if len(plot_data[1]) > 0 else 0)
+    ax.text(1.5, y_max * 0.95, sig, ha='center', va='bottom', fontsize=10, fontweight='bold')
+    if pval < 0.05:
+        ax.text(1.5, y_max * 1.05, '*', ha='center', va='bottom', fontsize=14, fontweight='bold', color='red')
     
     ax.set_ylabel('MKI67+ Treg (% of immune cells)', fontsize=11)
     ax.set_title('(B) MKI67+ Treg', fontweight='bold')
     ax.set_xlabel('Response', fontsize=11)
     
     fig.suptitle('Supplementary Figure 2 | Cross-cancer validation in melanoma\n'
-                 '(GSE120575, n = 48 post-treatment biopsies)',
+                 '(GSE120575, n = 48 tumor samples)',
                  fontsize=12, fontweight='bold', y=1.02)
     
     plt.tight_layout()
@@ -478,9 +407,9 @@ def plot_supplementary_figure_2(summary_df):
 # 7. SAVE SUMMARY TABLE
 # ---------------------------------------------------------------------------
 def save_summary(summary_df):
-    """Save per-patient summary table."""
-    summary_df.to_csv(os.path.join(RESULT_DIR, 'gse120575_per_patient_summary.csv'), index=False)
-    print(f"\n  Saved: {RESULT_DIR}/gse120575_per_patient_summary.csv")
+    """Save per-sample summary table."""
+    summary_df.to_csv(os.path.join(RESULT_DIR, 'gse120575_per_sample_summary.csv'), index=False)
+    print(f"\n  Saved: {RESULT_DIR}/gse120575_per_sample_summary.csv")
 
 
 # ---------------------------------------------------------------------------
@@ -489,16 +418,21 @@ def save_summary(summary_df):
 def main():
     print("=" * 70)
     print("GSE120575 Melanoma Cross-Cancer Validation")
-    print("Sade-Feldman et al., Cell 2018 | n = 48 post-treatment biopsies")
+    print("Sade-Feldman et al., Cell 2018")
     print("=" * 70)
     
-    if not check_data():
-        sys.exit(0)
+    # Check data exists
+    if not os.path.exists(TPM_FILE) or not os.path.exists(META_FILE):
+        print("\nERROR: Required data files not found.")
+        print(f"  Expected: {TPM_FILE}")
+        print(f"  Expected: {META_FILE}")
+        print("\nPlease download from GEO: GSE120575")
+        sys.exit(1)
     
-    meta = load_metadata()
-    counts = load_expression()
-    counts_sub, meta_sub, treg_cells, gene_map = identify_tregs(counts, meta)
-    summary_df = compute_proportions(counts_sub, meta_sub, treg_cells, gene_map)
+    meta = parse_metadata()
+    cell_df = load_expression(meta)
+    cell_df = classify_cells(cell_df)
+    summary_df = compute_proportions(cell_df)
     statistical_tests(summary_df)
     plot_supplementary_figure_2(summary_df)
     save_summary(summary_df)
