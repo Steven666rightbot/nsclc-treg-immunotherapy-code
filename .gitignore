@@ -1,0 +1,56 @@
+# Data files
+*.h5ad
+*.h5
+*.loom
+*.rds
+*.RData
+*.csv
+*.tsv
+*.txt
+*.mtx
+*.gz
+*.zip
+*.tar
+
+# Figures & outputs (keep code, ignore large outputs)
+*.png
+*.pdf
+*.jpg
+*.jpeg
+*.svg
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+ENV/
+
+# R
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Logs
+*.log
