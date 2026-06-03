@@ -3,6 +3,8 @@
 Companion code for the manuscript:
 > **Integrative Single-Cell Dissection Reveals a CCR8-to-MKI67 Treg Continuum Driving Immunotherapy Resistance in NSCLC**
 
+**Repository**: https://github.com/Steven666rightbot/nsclc-treg-immunotherapy-code
+
 This repository contains all computational analysis and figure-generation scripts used in the study.
 
 ---
@@ -40,10 +42,10 @@ This repository contains all computational analysis and figure-generation script
 
 | Dataset | GEO ID | Purpose |
 |---------|--------|---------|
-| Discovery cohort | [GSE243013](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE243013) | 242 post-neoadjuvant chemo-immunotherapy NSCLC samples |
-| External validation | [GSE207422](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE207422) | 14 NSCLC patients (neoadjuvant anti-PD-1) |
-| Spatial transcriptomics | [GSE189487](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE189487) | 10x Visium (13 sections, 8 NSCLC patients) |
-| Cross-cancer validation | [GSE120575](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE120575) | 48 post-treatment melanoma biopsies |
+| Discovery cohort | [GSE243013](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE243013) | 242 post-neoadjuvant chemo-immunotherapy NSCLC tumor samples (Liu et al., *Cell* 2025); 1,749,316 immune cells after quality control |
+| External validation (NSCLC) | [GSE207422](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE207422) | 14 NSCLC patients treated with neoadjuvant anti-PD-1 ± chemotherapy; 12 evaluable post-treatment samples used for validation |
+| Spatial transcriptomics | [GSE189487](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE189487) | 10x Visium (13 tissue sections from 8 NSCLC patients); 10 NSCLC sections (7 low-grade LUAD, 3 high-grade NSCLC; 8,686 spots) retained for analysis after excluding PDAC samples |
+| Cross-cancer validation (melanoma) | [GSE120575](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE120575) | 48 tumor biopsies from 32 melanoma patients (19 pre-treatment, 29 post-treatment; anti-PD-1 ± CTLA-4) |
 
 ---
 

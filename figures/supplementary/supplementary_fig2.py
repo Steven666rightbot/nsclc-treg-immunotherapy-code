@@ -4,27 +4,26 @@ GSE120575 (Sade-Feldman et al. Cell 2018) — 48 biopsies, anti-PD-1 ± CTLA-4
 Panel A: CCR8+ Treg proportions (R vs NR)
 Panel B: MKI67+ Treg proportions (R vs NR)
 """
-
-import gzip
 import os
+import gzip
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from scipy import stats
-from PIL import Image
 
-OUTDIR = "D:/research/cucumber/supp_fig2"
-DATA_DIR = "D:/research/cucumber/fig1/cross_cancer/data"
+# ─── Paths (script-relative, no hardcoded D:) ───
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTDIR = SCRIPT_DIR
+DATA_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, '..', 'fig1', 'cross_cancer', 'data'))
 os.makedirs(OUTDIR, exist_ok=True)
 
 DPI = 300
-# Updated colors: Responder = blue, Non-responder = red
 COLOR_R = '#2E5AAC'
 COLOR_NR = '#C0392B'
 
-TARGET_GENES = ['CD4', 'FOXP3', 'CCR8', 'MKI67']
+TARGET_GENES = ['FOXP3', 'IL2RA', 'CTLA4', 'CCR8', 'MKI67']
 POS_THRESHOLD = 0.0
 META_FILE = os.path.join(DATA_DIR, 'metadata.txt.gz')
 EXPR_FILE = os.path.join(DATA_DIR, 'expression.txt.gz')
@@ -35,8 +34,9 @@ with gzip.open(META_FILE, 'rt', encoding='latin-1') as f:
 header_idx = next(i for i, line in enumerate(lines) if line.startswith('Sample name'))
 
 meta = pd.read_csv(META_FILE, compression='gzip', encoding='latin-1', sep='\t',
-                    skiprows=header_idx, nrows=16291,
-                    usecols=['title', 'characteristics: patinet ID (Pre=baseline; Post= on treatment)',
+                    skiprows=header_idx,
+                    usecols=['title',
+                             'characteristics: patinet ID (Pre=baseline; Post= on treatment)',
                              'characteristics: response', 'characteristics: therapy'])
 meta.rename(columns={'title': 'cell',
                      'characteristics: patinet ID (Pre=baseline; Post= on treatment)': 'sample',
@@ -59,13 +59,23 @@ with gzip.open(EXPR_FILE, 'rt') as f:
             gene_expr[gene] = vals
 
 cell_df = pd.DataFrame({'cell': cell_names, 'sample': sample_ids,
-                        'CD4': gene_expr['CD4'], 'FOXP3': gene_expr['FOXP3'],
-                        'CCR8': gene_expr['CCR8'], 'MKI67': gene_expr['MKI67']})
+                        'FOXP3': gene_expr['FOXP3'], 'IL2RA': gene_expr['IL2RA'],
+                        'CTLA4': gene_expr['CTLA4'], 'CCR8': gene_expr['CCR8'],
+                        'MKI67': gene_expr['MKI67']})
 cell_df = cell_df[cell_df['cell'].isin(meta['cell'])].copy()
 
+# Map enriched samples back to their parent biopsy (matches tomato pipeline)
+# e.g. Post_P2_T_enriched -> Post_P2; Post_P17_myeloid_enriched -> Post_P17
+cell_df['sample'] = cell_df['sample'].str.replace(r'_T_enriched$|_myeloid_enriched$', '', regex=True)
+
 # ─── Identify subsets ───
-cell_df['is_CCR8_Treg'] = (cell_df['CD4'] > POS_THRESHOLD) & (cell_df['FOXP3'] > POS_THRESHOLD) & (cell_df['CCR8'] > POS_THRESHOLD)
-cell_df['is_MKI67_Treg'] = (cell_df['CD4'] > POS_THRESHOLD) & (cell_df['FOXP3'] > POS_THRESHOLD) & (cell_df['MKI67'] > POS_THRESHOLD)
+# Treg defined by FOXP3 + IL2RA + CTLA4 ≥ 2 markers (consensus gating for activated/effector Tregs)
+treg_score = ((cell_df['FOXP3'] > POS_THRESHOLD).astype(int) +
+              (cell_df['IL2RA'] > POS_THRESHOLD).astype(int) +
+              (cell_df['CTLA4'] > POS_THRESHOLD).astype(int))
+cell_df['is_treg'] = treg_score >= 2
+cell_df['is_CCR8_Treg'] = cell_df['is_treg'] & (cell_df['CCR8'] > POS_THRESHOLD)
+cell_df['is_MKI67_Treg'] = cell_df['is_treg'] & (cell_df['MKI67'] > POS_THRESHOLD)
 
 sample_stats = []
 for sample, grp in cell_df.groupby('sample'):
@@ -98,9 +108,8 @@ for ax, (col, label) in zip(axes, plot_configs):
     r_vals = sample_df.loc[r_mask, col].values
     nr_vals = sample_df.loc[nr_mask, col].values
 
-    # Standard boxplot with 1.5*IQR whiskers and visible caps
     bp = ax.boxplot([nr_vals, r_vals],
-                    tick_labels=['', ''],
+                    labels=['', ''],
                     patch_artist=True, widths=0.5,
                     whis=1.5,
                     showfliers=True,
@@ -114,7 +123,6 @@ for ax, (col, label) in zip(axes, plot_configs):
     bp['boxes'][1].set_facecolor(COLOR_R)
     bp['boxes'][1].set_alpha(0.7)
 
-    # Individual points (jitter) — smaller to avoid blocking boxes
     np.random.seed(42)
     ax.scatter(np.random.normal(1, 0.04, len(nr_vals)), nr_vals,
                color=COLOR_NR, edgecolor='black', linewidth=0.5, s=22, zorder=3, alpha=0.7)
@@ -123,12 +131,16 @@ for ax, (col, label) in zip(axes, plot_configs):
 
     _, p_val = stats.mannwhitneyu(r_vals, nr_vals, alternative='two-sided')
 
-    # Significance annotation centered above the boxes
     y_top = max(whisker_max(nr_vals), whisker_max(r_vals))
     y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
     ax.set_ylim(top=y_top + y_range * 0.25)
 
-    if label == 'CCR8⁺ Treg':
+    if p_val < 0.05:
+        sig_text = f'* p = {p_val:.3f}'
+        sig_color = '#333333'
+        ax.text(1.5, y_top + y_range * 0.06, sig_text,
+                ha='center', va='bottom', fontsize=11, fontweight='bold', color=sig_color)
+    else:
         sig_text = 'ns'
         p_text = f'(p = {p_val:.3f})'
         sig_color = '#666666'
@@ -137,11 +149,6 @@ for ax, (col, label) in zip(axes, plot_configs):
                 ha='right', va='bottom', fontsize=12, fontweight='bold', color=sig_color)
         ax.text(1.5, text_y, p_text,
                 ha='left', va='bottom', fontsize=8, color='#888888')
-    else:
-        sig_text = f'* p = {p_val:.3f}'
-        sig_color = '#333333'
-        ax.text(1.5, y_top + y_range * 0.06, sig_text,
-                ha='center', va='bottom', fontsize=11, fontweight='bold', color=sig_color)
 
     ax.set_title(label, fontsize=13, fontweight='bold')
     ax.set_ylabel('Proportion of immune cells', fontsize=11)
@@ -159,6 +166,10 @@ for ext in ['png', 'pdf']:
     print(f"  Saved: {path}")
 
 plt.close()
+
+# Final p-values (recalculate for clean output)
+_, pc = stats.mannwhitneyu(sample_df.loc[r_mask, 'prop_ccr8_treg'], sample_df.loc[nr_mask, 'prop_ccr8_treg'], alternative='two-sided')
+_, pm = stats.mannwhitneyu(sample_df.loc[r_mask, 'prop_mki67_treg'], sample_df.loc[nr_mask, 'prop_mki67_treg'], alternative='two-sided')
 print(f"\nn = {len(sample_df)} samples (R={r_mask.sum()}, NR={nr_mask.sum()})")
-print(f"MKI67+ Treg: p = {stats.mannwhitneyu(sample_df.loc[r_mask,'prop_mki67_treg'], sample_df.loc[nr_mask,'prop_mki67_treg'])[1]:.4f}")
-print(f"CCR8+ Treg:  p = {stats.mannwhitneyu(sample_df.loc[r_mask,'prop_ccr8_treg'], sample_df.loc[nr_mask,'prop_ccr8_treg'])[1]:.4f}")
+print(f"CCR8+ Treg:  p = {pc:.4f}")
+print(f"MKI67+ Treg: p = {pm:.4f}")

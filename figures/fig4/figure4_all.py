@@ -42,7 +42,7 @@ H5AD_PATH = r"D:\research\tomato\results\spatial\spatial_processed.h5ad"
 
 os.makedirs(BASE_DIR, exist_ok=True)
 
-SAMPLES = ["LG_2", "LG_6", "LG_7", "HG_3"]
+SAMPLES = ["LG_2", "LG_6", "LG_7", "HG_3"]  # Representative NSCLC samples only (PDAC removed)
 DPI = 300
 
 # Colors
@@ -305,73 +305,78 @@ def plot_regional_violin(df_meta: pd.DataFrame, output_prefix: str = "fig4c_regi
 
 
 # ---------------------------------------------------------------------------
-# Panel 4E — Correlation scatter
+# Panel 4E — Grade-dependent stromal enrichment
 # ---------------------------------------------------------------------------
-def plot_correlation_scatter(
+def plot_grade_dependent_enrichment(
     df_meta: pd.DataFrame,
-    output_prefix: str = "fig4e_correlation",
+    output_prefix: str = "fig4e_grade_enrichment",
 ):
-    """Scatter plot of MHC-I module vs CCR8+ score, colored by sample.
-    Only 4 main samples highlighted; others shown as gray background.
-    Spearman correlation uses article-corrected value (ρ = 0.284)."""
+    """Grouped bar plot comparing CCR8+ vs MKI67+ stromal enrichment
+    between Low Grade and High Grade NSCLC."""
     fig, ax = plt.subplots(figsize=(4.5, 4))
 
-    # Sample colors (matching spatial panel style)
-    SAMPLE_COLORS = {
-        "LG_2": "#999999",   # gray
-        "LG_6": "#4DAF5A",   # green
-        "LG_7": "#BEBEBE",   # light gray
-        "HG_3": "#E67E22",   # orange
-    }
-    MAIN_SAMPLES = ["LG_2", "LG_6", "LG_7", "HG_3"]
-    PLOT_ORDER = ["other"] + MAIN_SAMPLES  # other first (background)
+    grades = ["Low Grade", "High Grade"]
+    ccr8_deltas = []
+    mki67_deltas = []
+    ccr8_ps = []
+    mki67_ps = []
 
-    valid = df_meta[["mhci_module_z", "ccr8_score_z", "sample_id"]].dropna()
+    for grade in grades:
+        sub = df_meta[df_meta["grade"] == grade]
+        hs = sub[sub["region"] == "hard_stroma"]
+        tc = sub[sub["region"] == "tumor_core"]
 
-    # Plot "other" samples first (background), then main 4 on top
-    other = valid[~valid["sample_id"].isin(MAIN_SAMPLES)]
-    ax.scatter(
-        other["mhci_module_z"], other["ccr8_score_z"],
-        c="#E0E0E0", s=4, alpha=0.3, edgecolors="none", label=None,
-    )
+        # CCR8+
+        ccr8_hs = hs["ccr8_score_z"].dropna()
+        ccr8_tc = tc["ccr8_score_z"].dropna()
+        if len(ccr8_hs) > 0 and len(ccr8_tc) > 0:
+            _, p_ccr8 = stats.mannwhitneyu(ccr8_hs, ccr8_tc, alternative="two-sided")
+            ccr8_deltas.append(ccr8_hs.mean() - ccr8_tc.mean())
+            ccr8_ps.append(p_ccr8)
+        else:
+            ccr8_deltas.append(np.nan)
+            ccr8_ps.append(1.0)
 
-    for sid in MAIN_SAMPLES:
-        sub = valid[valid["sample_id"] == sid]
-        ax.scatter(
-            sub["mhci_module_z"], sub["ccr8_score_z"],
-            c=SAMPLE_COLORS[sid], label=sid, s=6, alpha=0.5, edgecolors="none",
-        )
+        # MKI67+
+        mki67_hs = hs["mki67_score_z"].dropna()
+        mki67_tc = tc["mki67_score_z"].dropna()
+        if len(mki67_hs) > 0 and len(mki67_tc) > 0:
+            _, p_mki67 = stats.mannwhitneyu(mki67_hs, mki67_tc, alternative="two-sided")
+            mki67_deltas.append(mki67_hs.mean() - mki67_tc.mean())
+            mki67_ps.append(p_mki67)
+        else:
+            mki67_deltas.append(np.nan)
+            mki67_ps.append(1.0)
 
-    # Regression line using ALL valid points
-    slope, intercept, _, _, _ = stats.linregress(valid["mhci_module_z"], valid["ccr8_score_z"])
-    x_line = np.linspace(valid["mhci_module_z"].min(), valid["mhci_module_z"].max(), 200)
-    y_line = slope * x_line + intercept
-    ax.plot(x_line, y_line, color="black", linewidth=1.5, linestyle="--")
+    x = np.arange(len(grades))
+    width = 0.3
 
-    # 95% confidence band
-    n = len(valid)
-    x_mean = valid["mhci_module_z"].mean()
-    ssx = np.sum((valid["mhci_module_z"] - x_mean) ** 2)
-    y_pred = slope * valid["mhci_module_z"] + intercept
-    residuals = valid["ccr8_score_z"] - y_pred
-    mse = np.sum(residuals**2) / (n - 2)
-    se_fit = np.sqrt(mse * (1 / n + (x_line - x_mean) ** 2 / ssx))
-    t_crit = stats.t.ppf(0.975, df=n - 2) if n > 2 else 1.96
-    ax.fill_between(x_line, y_line - t_crit * se_fit, y_line + t_crit * se_fit, color="black", alpha=0.08)
+    bars1 = ax.bar(x - width/2, ccr8_deltas, width, label="CCR8+ Treg",
+                   color=COLOR_CCR8, edgecolor="black", linewidth=0.8, alpha=0.85)
+    bars2 = ax.bar(x + width/2, mki67_deltas, width, label="MKI67+ Treg",
+                   color=COLOR_MKI67, edgecolor="black", linewidth=0.8, alpha=0.85)
 
-    # Correct Spearman from article
-    ax.text(
-        0.05, 0.95, "ρ = 0.284, p < 2.2e-16",
-        transform=ax.transAxes, fontsize=8, verticalalignment="top",
-        bbox=dict(boxstyle="round", facecolor="white", edgecolor="gray", alpha=0.9),
-    )
+    # P-value annotations (stromal enrichment significance)
+    for i, grade in enumerate(grades):
+        y_max = max(ccr8_deltas[i], mki67_deltas[i])
+        # CCR8+ p
+        sig_ccr8 = "***" if ccr8_ps[i] < 0.001 else "**" if ccr8_ps[i] < 0.01 else "*" if ccr8_ps[i] < 0.05 else "ns"
+        ax.text(i - width/2, ccr8_deltas[i] + 0.03, sig_ccr8,
+                ha="center", va="bottom", fontsize=8, fontweight="bold", color=COLOR_CCR8)
+        # MKI67+ p
+        sig_mki67 = "***" if mki67_ps[i] < 0.001 else "**" if mki67_ps[i] < 0.01 else "*" if mki67_ps[i] < 0.05 else "ns"
+        ax.text(i + width/2, mki67_deltas[i] + 0.03, sig_mki67,
+                ha="center", va="bottom", fontsize=8, fontweight="bold", color=COLOR_MKI67)
 
-    ax.set_xlabel("MHC-I Module Score (z)", fontsize=9, fontweight="bold")
-    ax.set_ylabel("CCR8+ Treg Score (z)", fontsize=9, fontweight="bold")
-    ax.legend(loc="lower right", fontsize=7, frameon=True, edgecolor="gray", markerscale=2)
+    ax.set_xticks(x)
+    ax.set_xticklabels(grades, fontsize=9, fontweight="bold")
+    ax.set_ylabel("Stromal Enrichment Score\n(stroma z − tumor core z)", fontsize=9, fontweight="bold")
+    ax.set_xlabel("")
+    ax.legend(loc="upper right", fontsize=9, frameon=False)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.tick_params(labelsize=8)
+    ax.axhline(y=0, color="gray", linewidth=0.5, linestyle="--")
+    ax.tick_params(axis="y", labelsize=8)
 
     pdf_path = os.path.join(BASE_DIR, f"{output_prefix}.pdf")
     png_path = os.path.join(BASE_DIR, f"{output_prefix}.png")
@@ -419,8 +424,8 @@ def main():
         df_meta, "mhci_module_z", "MHC-I Module Score (z)", "MHC-I", "fig4d_mhci_spatial", cmap="RdBu_r"
     )
 
-    print("Generating Panel 4E (correlation scatter) ...")
-    plot_correlation_scatter(df_meta)
+    print("Generating Panel 4E (grade-dependent enrichment) ...")
+    plot_grade_dependent_enrichment(df_meta)
 
     print("\nGenerating combined figure (PIL composition) ...")
     _generate_combined_figure()
@@ -430,7 +435,7 @@ def main():
 def _generate_combined_figure():
     """PIL composition — NO whitespace layout:
     Row 1: [A spatial] [B spatial] [D spatial]  — three same-size spatial plots
-    Row 2: [C violin] [E correlation]            — stretched full width
+    Row 2: [C violin] [E grade enrichment]      — stretched full width
     """
     from PIL import Image
 
@@ -442,7 +447,7 @@ def _generate_combined_figure():
         "B": os.path.join(BASE_DIR, "fig4b_mki67_spatial.png"),
         "C": os.path.join(BASE_DIR, "fig4c_regional_violin.png"),
         "D": os.path.join(BASE_DIR, "fig4d_mhci_spatial.png"),
-        "E": os.path.join(BASE_DIR, "fig4e_correlation.png"),
+        "E": os.path.join(BASE_DIR, "fig4e_grade_enrichment.png"),
     }
     imgs = {l: Image.open(p).convert("RGB") for l, p in panels.items()}
     for l, img in imgs.items():
@@ -472,7 +477,7 @@ def _generate_combined_figure():
         row1.paste(img, (x, 0))
         x += col_w + gap
 
-    # ── Row 2: violin (C) + correlation (E) — split full width ──
+    # ── Row 2: violin (C) + grade enrichment (E) — split full width ──
     half_w = (JTM_WIDTH - gap) // 2
     row2_imgs = []
     for label in ["C", "E"]:
