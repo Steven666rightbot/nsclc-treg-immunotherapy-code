@@ -1,8 +1,8 @@
 """
 Supplementary Figure 2: Cross-cancer validation of Treg signatures in melanoma
 GSE120575 (Sade-Feldman et al. Cell 2018) — 48 biopsies, anti-PD-1 ± CTLA-4
-Panel A: CCR8+ Treg proportions (R vs NR)
-Panel B: MKI67+ Treg proportions (R vs NR)
+Panel A: Sequencing depth (cells per biopsy) by response
+Panel B: Two-feature logistic regression ROC (CCR8+ Treg + MKI67+ Treg proportions)
 """
 import os
 import gzip
@@ -12,6 +12,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from scipy import stats
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import roc_auc_score, roc_curve
 
 # ─── Paths (script-relative, no hardcoded D:) ───
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -65,11 +68,9 @@ cell_df = pd.DataFrame({'cell': cell_names, 'sample': sample_ids,
 cell_df = cell_df[cell_df['cell'].isin(meta['cell'])].copy()
 
 # Map enriched samples back to their parent biopsy (matches tomato pipeline)
-# e.g. Post_P2_T_enriched -> Post_P2; Post_P17_myeloid_enriched -> Post_P17
 cell_df['sample'] = cell_df['sample'].str.replace(r'_T_enriched$|_myeloid_enriched$', '', regex=True)
 
 # ─── Identify subsets ───
-# Treg defined by FOXP3 + IL2RA + CTLA4 ≥ 2 markers (consensus gating for activated/effector Tregs)
 treg_score = ((cell_df['FOXP3'] > POS_THRESHOLD).astype(int) +
               (cell_df['IL2RA'] > POS_THRESHOLD).astype(int) +
               (cell_df['CTLA4'] > POS_THRESHOLD).astype(int))
@@ -81,6 +82,8 @@ sample_stats = []
 for sample, grp in cell_df.groupby('sample'):
     n_total = len(grp)
     sample_stats.append({'sample': sample, 'n_cells': n_total,
+                         'n_ccr8_treg': grp['is_CCR8_Treg'].sum(),
+                         'n_mki67_treg': grp['is_MKI67_Treg'].sum(),
                          'prop_ccr8_treg': grp['is_CCR8_Treg'].sum() / n_total,
                          'prop_mki67_treg': grp['is_MKI67_Treg'].sum() / n_total})
 sample_df = pd.DataFrame(sample_stats).merge(sample_meta, on='sample')
@@ -95,68 +98,94 @@ def whisker_max(vals):
     upper = q3 + 1.5 * iqr
     return min(upper, max(vals))
 
-# ─── Plot ───
-fig, axes = plt.subplots(1, 2, figsize=(6.5, 4.5), sharey=False)
-fig.subplots_adjust(wspace=0.3)
+# ─── Panel A: Cells per biopsy ───
+fig, axes = plt.subplots(1, 2, figsize=(6.5, 4.5))
+fig.subplots_adjust(wspace=0.35)
 
-plot_configs = [
-    ('prop_ccr8_treg', 'CCR8⁺ Treg'),
-    ('prop_mki67_treg', 'MKI67⁺ Treg'),
-]
+ax = axes[0]
+r_cells = sample_df.loc[r_mask, 'n_cells'].values
+nr_cells = sample_df.loc[nr_mask, 'n_cells'].values
 
-for ax, (col, label) in zip(axes, plot_configs):
-    r_vals = sample_df.loc[r_mask, col].values
-    nr_vals = sample_df.loc[nr_mask, col].values
+bp = ax.boxplot([nr_cells, r_cells],
+                labels=['', ''],
+                patch_artist=True, widths=0.5,
+                whis=1.5,
+                showfliers=True,
+                medianprops=dict(color='black', linewidth=2.5),
+                whiskerprops=dict(linewidth=1.2, color='#333333'),
+                capprops=dict(linewidth=1.2, color='#333333'),
+                flierprops=dict(marker='o', markerfacecolor='none', markersize=4,
+                               markeredgewidth=0.5, markeredgecolor='#888888'))
+bp['boxes'][0].set_facecolor(COLOR_NR)
+bp['boxes'][0].set_alpha(0.7)
+bp['boxes'][1].set_facecolor(COLOR_R)
+bp['boxes'][1].set_alpha(0.7)
 
-    bp = ax.boxplot([nr_vals, r_vals],
-                    labels=['', ''],
-                    patch_artist=True, widths=0.5,
-                    whis=1.5,
-                    showfliers=True,
-                    medianprops=dict(color='black', linewidth=2.5),
-                    whiskerprops=dict(linewidth=1.2, color='#333333'),
-                    capprops=dict(linewidth=1.2, color='#333333'),
-                    flierprops=dict(marker='o', markerfacecolor='none', markersize=4,
-                                   markeredgewidth=0.5, markeredgecolor='#888888'))
-    bp['boxes'][0].set_facecolor(COLOR_NR)
-    bp['boxes'][0].set_alpha(0.7)
-    bp['boxes'][1].set_facecolor(COLOR_R)
-    bp['boxes'][1].set_alpha(0.7)
+np.random.seed(42)
+ax.scatter(np.random.normal(1, 0.04, len(nr_cells)), nr_cells,
+           color=COLOR_NR, edgecolor='black', linewidth=0.5, s=22, zorder=3, alpha=0.7)
+ax.scatter(np.random.normal(2, 0.04, len(r_cells)), r_cells,
+           color=COLOR_R, edgecolor='black', linewidth=0.5, s=22, zorder=3, alpha=0.7)
 
-    np.random.seed(42)
-    ax.scatter(np.random.normal(1, 0.04, len(nr_vals)), nr_vals,
-               color=COLOR_NR, edgecolor='black', linewidth=0.5, s=22, zorder=3, alpha=0.7)
-    ax.scatter(np.random.normal(2, 0.04, len(r_vals)), r_vals,
-               color=COLOR_R, edgecolor='black', linewidth=0.5, s=22, zorder=3, alpha=0.7)
+_, p_val = stats.mannwhitneyu(r_cells, nr_cells, alternative='two-sided')
 
-    _, p_val = stats.mannwhitneyu(r_vals, nr_vals, alternative='two-sided')
+y_top = max(whisker_max(nr_cells), whisker_max(r_cells))
+y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
+ax.set_ylim(top=y_top + y_range * 0.25)
 
-    y_top = max(whisker_max(nr_vals), whisker_max(r_vals))
-    y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
-    ax.set_ylim(top=y_top + y_range * 0.25)
+if p_val < 0.05:
+    sig_text = f'* p = {p_val:.3f}'
+    sig_color = '#333333'
+    ax.text(1.5, y_top + y_range * 0.06, sig_text,
+            ha='center', va='bottom', fontsize=11, fontweight='bold', color=sig_color)
+else:
+    sig_text = 'ns'
+    p_text = f'(p = {p_val:.3f})'
+    sig_color = '#666666'
+    text_y = y_top + y_range * 0.06
+    ax.text(1.5, text_y, sig_text,
+            ha='right', va='bottom', fontsize=12, fontweight='bold', color=sig_color)
+    ax.text(1.5, text_y, p_text,
+            ha='left', va='bottom', fontsize=8, color='#888888')
 
-    if p_val < 0.05:
-        sig_text = f'* p = {p_val:.3f}'
-        sig_color = '#333333'
-        ax.text(1.5, y_top + y_range * 0.06, sig_text,
-                ha='center', va='bottom', fontsize=11, fontweight='bold', color=sig_color)
-    else:
-        sig_text = 'ns'
-        p_text = f'(p = {p_val:.3f})'
-        sig_color = '#666666'
-        text_y = y_top + y_range * 0.06
-        ax.text(1.5, text_y, sig_text,
-                ha='right', va='bottom', fontsize=12, fontweight='bold', color=sig_color)
-        ax.text(1.5, text_y, p_text,
-                ha='left', va='bottom', fontsize=8, color='#888888')
+ax.set_title('Cells per biopsy', fontsize=13, fontweight='bold')
+ax.set_ylabel('Number of cells', fontsize=11)
+ax.set_xticks([1, 2])
+ax.set_xticklabels([f'NR\n(n={len(nr_cells)})', f'R\n(n={len(r_cells)})'], fontsize=10)
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.set_ylim(bottom=0)
 
-    ax.set_title(label, fontsize=13, fontweight='bold')
-    ax.set_ylabel('Proportion of immune cells', fontsize=11)
-    ax.set_xticks([1, 2])
-    ax.set_xticklabels([f'NR\n(n={len(nr_vals)})', f'R\n(n={len(r_vals)})'], fontsize=10)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.set_ylim(bottom=0)
+# ─── Panel B: Two-feature ROC ───
+ax = axes[1]
+
+X = sample_df[['prop_ccr8_treg', 'prop_mki67_treg']].values
+y = sample_df['response_binary'].values
+
+scaler = StandardScaler()
+X_s = scaler.fit_transform(X)
+
+model = LogisticRegression(C=1.0, max_iter=5000, class_weight='balanced', random_state=42)
+model.fit(X_s, y)
+y_prob = model.predict_proba(X_s)[:, 1]
+auc = roc_auc_score(y, y_prob)
+fpr, tpr, _ = roc_curve(y, y_prob)
+
+ax.plot(fpr, tpr, color='#C0392B', lw=2.5,
+        label=f'Two-feature LR  AUC = {auc:.3f}')
+ax.fill_between(fpr, tpr, alpha=0.15, color='#C0392B')
+ax.plot([0, 1], [0, 1], 'k--', lw=1.2, alpha=0.4, label='Chance')
+
+ax.set_xlabel('False Positive Rate', fontsize=11, fontweight='bold')
+ax.set_ylabel('True Positive Rate', fontsize=11, fontweight='bold')
+ax.set_title('Two-feature logistic regression\n(CCR8⁺ + MKI67⁺ Treg)', fontsize=13, fontweight='bold')
+ax.set_xlim([-0.02, 1.02])
+ax.set_ylim([-0.02, 1.02])
+ax.set_aspect('equal')
+ax.legend(loc='lower right', fontsize=9, framealpha=0.9, edgecolor='#cccccc')
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.grid(True, alpha=0.15)
 
 plt.tight_layout()
 
@@ -167,9 +196,11 @@ for ext in ['png', 'pdf']:
 
 plt.close()
 
-# Final p-values (recalculate for clean output)
+# Final p-values
 _, pc = stats.mannwhitneyu(sample_df.loc[r_mask, 'prop_ccr8_treg'], sample_df.loc[nr_mask, 'prop_ccr8_treg'], alternative='two-sided')
 _, pm = stats.mannwhitneyu(sample_df.loc[r_mask, 'prop_mki67_treg'], sample_df.loc[nr_mask, 'prop_mki67_treg'], alternative='two-sided')
 print(f"\nn = {len(sample_df)} samples (R={r_mask.sum()}, NR={nr_mask.sum()})")
+print(f"Cells per biopsy p = {p_val:.4f}")
 print(f"CCR8+ Treg:  p = {pc:.4f}")
 print(f"MKI67+ Treg: p = {pm:.4f}")
+print(f"Two-feature AUC = {auc:.3f}")
