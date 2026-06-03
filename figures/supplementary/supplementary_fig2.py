@@ -1,8 +1,9 @@
 """
 Supplementary Figure 2: Cross-cancer validation of Treg signatures in melanoma
 GSE120575 (Sade-Feldman et al. Cell 2018) — 48 biopsies, anti-PD-1 ± CTLA-4
-Panel A: Sequencing depth (cells per biopsy) by response
-Panel B: Two-feature logistic regression ROC (CCR8+ Treg + MKI67+ Treg proportions)
+Left:  CCR8⁺ Treg proportions (R vs NR)
+Center: MKI67⁺ Treg proportions (R vs NR)
+Right: Two-feature logistic regression ROC (CCR8⁺ + MKI67⁺ Treg)
 """
 import os
 import gzip
@@ -67,7 +68,7 @@ cell_df = pd.DataFrame({'cell': cell_names, 'sample': sample_ids,
                         'MKI67': gene_expr['MKI67']})
 cell_df = cell_df[cell_df['cell'].isin(meta['cell'])].copy()
 
-# Map enriched samples back to their parent biopsy (matches tomato pipeline)
+# Map enriched samples back to their parent biopsy
 cell_df['sample'] = cell_df['sample'].str.replace(r'_T_enriched$|_myeloid_enriched$', '', regex=True)
 
 # ─── Identify subsets ───
@@ -82,8 +83,6 @@ sample_stats = []
 for sample, grp in cell_df.groupby('sample'):
     n_total = len(grp)
     sample_stats.append({'sample': sample, 'n_cells': n_total,
-                         'n_ccr8_treg': grp['is_CCR8_Treg'].sum(),
-                         'n_mki67_treg': grp['is_MKI67_Treg'].sum(),
                          'prop_ccr8_treg': grp['is_CCR8_Treg'].sum() / n_total,
                          'prop_mki67_treg': grp['is_MKI67_Treg'].sum() / n_total})
 sample_df = pd.DataFrame(sample_stats).merge(sample_meta, on='sample')
@@ -98,66 +97,71 @@ def whisker_max(vals):
     upper = q3 + 1.5 * iqr
     return min(upper, max(vals))
 
-# ─── Panel A: Cells per biopsy ───
-fig, axes = plt.subplots(1, 2, figsize=(6.5, 4.5))
+# ─── Plot ───
+fig, axes = plt.subplots(1, 3, figsize=(10, 4.2), sharey=False)
 fig.subplots_adjust(wspace=0.35)
 
-ax = axes[0]
-r_cells = sample_df.loc[r_mask, 'n_cells'].values
-nr_cells = sample_df.loc[nr_mask, 'n_cells'].values
+plot_configs = [
+    ('prop_ccr8_treg', 'CCR8⁺ Treg'),
+    ('prop_mki67_treg', 'MKI67⁺ Treg'),
+]
 
-bp = ax.boxplot([nr_cells, r_cells],
-                labels=['', ''],
-                patch_artist=True, widths=0.5,
-                whis=1.5,
-                showfliers=True,
-                medianprops=dict(color='black', linewidth=2.5),
-                whiskerprops=dict(linewidth=1.2, color='#333333'),
-                capprops=dict(linewidth=1.2, color='#333333'),
-                flierprops=dict(marker='o', markerfacecolor='none', markersize=4,
-                               markeredgewidth=0.5, markeredgecolor='#888888'))
-bp['boxes'][0].set_facecolor(COLOR_NR)
-bp['boxes'][0].set_alpha(0.7)
-bp['boxes'][1].set_facecolor(COLOR_R)
-bp['boxes'][1].set_alpha(0.7)
+for ax, (col, label) in zip(axes[:2], plot_configs):
+    r_vals = sample_df.loc[r_mask, col].values
+    nr_vals = sample_df.loc[nr_mask, col].values
 
-np.random.seed(42)
-ax.scatter(np.random.normal(1, 0.04, len(nr_cells)), nr_cells,
-           color=COLOR_NR, edgecolor='black', linewidth=0.5, s=22, zorder=3, alpha=0.7)
-ax.scatter(np.random.normal(2, 0.04, len(r_cells)), r_cells,
-           color=COLOR_R, edgecolor='black', linewidth=0.5, s=22, zorder=3, alpha=0.7)
+    bp = ax.boxplot([nr_vals, r_vals],
+                    labels=['', ''],
+                    patch_artist=True, widths=0.5,
+                    whis=1.5,
+                    showfliers=True,
+                    medianprops=dict(color='black', linewidth=2.5),
+                    whiskerprops=dict(linewidth=1.2, color='#333333'),
+                    capprops=dict(linewidth=1.2, color='#333333'),
+                    flierprops=dict(marker='o', markerfacecolor='none', markersize=4,
+                                   markeredgewidth=0.5, markeredgecolor='#888888'))
+    bp['boxes'][0].set_facecolor(COLOR_NR)
+    bp['boxes'][0].set_alpha(0.7)
+    bp['boxes'][1].set_facecolor(COLOR_R)
+    bp['boxes'][1].set_alpha(0.7)
 
-_, p_val = stats.mannwhitneyu(r_cells, nr_cells, alternative='two-sided')
+    np.random.seed(42)
+    ax.scatter(np.random.normal(1, 0.04, len(nr_vals)), nr_vals,
+               color=COLOR_NR, edgecolor='black', linewidth=0.5, s=22, zorder=3, alpha=0.7)
+    ax.scatter(np.random.normal(2, 0.04, len(r_vals)), r_vals,
+               color=COLOR_R, edgecolor='black', linewidth=0.5, s=22, zorder=3, alpha=0.7)
 
-y_top = max(whisker_max(nr_cells), whisker_max(r_cells))
-y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
-ax.set_ylim(top=y_top + y_range * 0.25)
+    _, p_val = stats.mannwhitneyu(r_vals, nr_vals, alternative='two-sided')
 
-if p_val < 0.05:
-    sig_text = f'* p = {p_val:.3f}'
-    sig_color = '#333333'
-    ax.text(1.5, y_top + y_range * 0.06, sig_text,
-            ha='center', va='bottom', fontsize=11, fontweight='bold', color=sig_color)
-else:
-    sig_text = 'ns'
-    p_text = f'(p = {p_val:.3f})'
-    sig_color = '#666666'
-    text_y = y_top + y_range * 0.06
-    ax.text(1.5, text_y, sig_text,
-            ha='right', va='bottom', fontsize=12, fontweight='bold', color=sig_color)
-    ax.text(1.5, text_y, p_text,
-            ha='left', va='bottom', fontsize=8, color='#888888')
+    y_top = max(whisker_max(nr_vals), whisker_max(r_vals))
+    y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
+    ax.set_ylim(top=y_top + y_range * 0.25)
 
-ax.set_title('Cells per biopsy', fontsize=13, fontweight='bold')
-ax.set_ylabel('Number of cells', fontsize=11)
-ax.set_xticks([1, 2])
-ax.set_xticklabels([f'NR\n(n={len(nr_cells)})', f'R\n(n={len(r_cells)})'], fontsize=10)
-ax.spines['top'].set_visible(False)
-ax.spines['right'].set_visible(False)
-ax.set_ylim(bottom=0)
+    if p_val < 0.05:
+        sig_text = f'* p = {p_val:.3f}'
+        sig_color = '#333333'
+        ax.text(1.5, y_top + y_range * 0.06, sig_text,
+                ha='center', va='bottom', fontsize=11, fontweight='bold', color=sig_color)
+    else:
+        sig_text = 'ns'
+        p_text = f'(p = {p_val:.3f})'
+        sig_color = '#666666'
+        text_y = y_top + y_range * 0.06
+        ax.text(1.5, text_y, sig_text,
+                ha='right', va='bottom', fontsize=12, fontweight='bold', color=sig_color)
+        ax.text(1.5, text_y, p_text,
+                ha='left', va='bottom', fontsize=8, color='#888888')
 
-# ─── Panel B: Two-feature ROC ───
-ax = axes[1]
+    ax.set_title(label, fontsize=13, fontweight='bold')
+    ax.set_ylabel('Proportion of immune cells', fontsize=11)
+    ax.set_xticks([1, 2])
+    ax.set_xticklabels([f'NR\n(n={len(nr_vals)})', f'R\n(n={len(r_vals)})'], fontsize=10)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.set_ylim(bottom=0)
+
+# ─── Panel C: Two-feature ROC ───
+ax = axes[2]
 
 X = sample_df[['prop_ccr8_treg', 'prop_mki67_treg']].values
 y = sample_df['response_binary'].values
@@ -200,7 +204,6 @@ plt.close()
 _, pc = stats.mannwhitneyu(sample_df.loc[r_mask, 'prop_ccr8_treg'], sample_df.loc[nr_mask, 'prop_ccr8_treg'], alternative='two-sided')
 _, pm = stats.mannwhitneyu(sample_df.loc[r_mask, 'prop_mki67_treg'], sample_df.loc[nr_mask, 'prop_mki67_treg'], alternative='two-sided')
 print(f"\nn = {len(sample_df)} samples (R={r_mask.sum()}, NR={nr_mask.sum()})")
-print(f"Cells per biopsy p = {p_val:.4f}")
 print(f"CCR8+ Treg:  p = {pc:.4f}")
 print(f"MKI67+ Treg: p = {pm:.4f}")
 print(f"Two-feature AUC = {auc:.3f}")
