@@ -155,7 +155,7 @@ for ax, (col, label) in zip(axes[:2], plot_configs):
     ax.set_title(label, fontsize=13, fontweight='bold')
     ax.set_ylabel('Proportion of immune cells', fontsize=11)
     ax.set_xticks([1, 2])
-    ax.set_xticklabels([f'NR\n(n={len(nr_vals)})', f'R\n(n={len(r_vals)})'], fontsize=10)
+    ax.set_xticklabels([f'NR\n(n={len(nr_vals)})', f'R\n(n={len(r_vals)})'], fontsize=12)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.set_ylim(bottom=0)
@@ -183,6 +183,14 @@ ax.plot([0, 1], [0, 1], 'k--', lw=1.2, alpha=0.4, label='Chance')
 ax.set_xlabel('False Positive Rate', fontsize=11, fontweight='bold')
 ax.set_ylabel('True Positive Rate', fontsize=11, fontweight='bold')
 ax.set_title('Two-feature logistic regression\n(CCR8⁺ + MKI67⁺ Treg)', fontsize=13, fontweight='bold')
+
+# Panel labels (A/B/C)
+axes[0].text(-0.22, 1.08, 'A', transform=axes[0].transAxes, fontsize=18,
+             fontweight='bold', va='top', ha='right')
+axes[1].text(-0.22, 1.08, 'B', transform=axes[1].transAxes, fontsize=18,
+             fontweight='bold', va='top', ha='right')
+ax.text(-0.15, 1.08, 'C', transform=ax.transAxes, fontsize=18,
+        fontweight='bold', va='top', ha='right')
 ax.set_xlim([-0.02, 1.02])
 ax.set_ylim([-0.02, 1.02])
 ax.set_aspect('equal')
